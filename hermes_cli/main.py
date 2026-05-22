@@ -483,9 +483,10 @@ def _apply_profile_override() -> None:
     # 3. If we found a profile, resolve and set HERMES_HOME
     if profile_name is not None:
         try:
-            from hermes_cli.profiles import resolve_profile_env
+            from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
 
             hermes_home = resolve_profile_env(profile_name)
+            canonical_name = normalize_profile_name(profile_name)
         except FileNotFoundError as exc:
             hermes_home = _resolve_sudo_user_profile_env(profile_name)
             if not hermes_home:
@@ -502,6 +503,12 @@ def _apply_profile_override() -> None:
             )
             return
         os.environ["HERMES_HOME"] = hermes_home
+        # Also publish the canonical profile name so downstream code that
+        # branches on profile identity (kanban, gateway adapters, ACP entry)
+        # can pick it up without re-parsing HERMES_HOME. Honour any value the
+        # caller already exported — a deliberate ``HERMES_PROFILE=...`` on
+        # the spawning shell should win over this best-effort default.
+        os.environ.setdefault("HERMES_PROFILE", canonical_name)
         # Strip the flag from argv so argparse doesn't choke
         if consume > 0 and profile_index is not None:
             start = profile_index + 1  # +1 because argv is sys.argv[1:]
@@ -12327,6 +12334,12 @@ def cmd_acp(args):
             acp_argv.append("--setup-browser")
         if getattr(args, "assume_yes", False):
             acp_argv.append("--yes")
+        # Forward the active profile name so ACP can announce it in logs
+        # and so direct ``hermes-acp`` invocations from editor configs
+        # behave the same as ``hermes -p <name> acp``.
+        active_profile = os.environ.get("HERMES_PROFILE", "").strip()
+        if active_profile and active_profile != "default":
+            acp_argv.extend(["--profile", active_profile])
         if getattr(args, "skills", None):
             for skill_name in args.skills:
                 acp_argv.extend(["--skills", skill_name])
@@ -13472,7 +13485,6 @@ def main():
     # acp command  (parser built in hermes_cli/subcommands/acp.py)
     # =========================================================================
     build_acp_parser(subparsers, cmd_acp=cmd_acp)
-
     # =========================================================================
     # profile command  (parser built in hermes_cli/subcommands/profile.py)
     # =========================================================================
